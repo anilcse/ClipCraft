@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipCraft - Video Cropper</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .progress-circle {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: conic-gradient(#3b82f6 0%, #3b82f6 var(--progress), #e5e7eb var(--progress), #e5e7eb 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #1e40af;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <!-- Project Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-blue-600">ClipCraft</h1>
+            <p class="text-gray-600">Crop, edit, and create stunning video clips from YouTube.</p>
+        </header>
+
+        <!-- Input Form -->
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <form id="videoForm" class="space-y-4">
+                <div>
+                    <label for="url" class="block text-gray-700 font-bold mb-2">YouTube URL:</label>
+                    <input type="text" id="url" name="url" required
+                        class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label for="cropRanges" class="block text-gray-700 font-bold mb-2">Crop Ranges (e.g., 0:10-0:20 1:00-1:30):</label>
+                    <input type="text" id="cropRanges" name="cropRanges" required
+                        class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label for="slowMotion" class="flex items-center">
+                        <input type="checkbox" id="slowMotion" name="slowMotion"
+                            class="mr-2">
+                        <span class="text-gray-700">Enable Slow Motion</span>
+                    </label>
+                </div>
+                <button type="submit" id="generateButton"
+                    class="w-full bg-blue-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition duration-300">
+                    Generate Video
+                </button>
+            </form>
+        </div>
+
+        <!-- Task History -->
+        <div class="mt-8">
+            <h2 class="text-2xl font-bold mb-4">Task History</h2>
+            <ul id="taskHistory" class="space-y-2">
+                <!-- Task history items will be added here dynamically -->
+            </ul>
+        </div>
+
+        <!-- Result Section -->
+        <div id="result" class="mt-8 hidden">
+            <h2 class="text-2xl font-bold mb-4">Result</h2>
+            <a id="downloadLink" href="#" class="bg-green-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition duration-300">
+                Download Video
+            </a>
+        </div>
+    </div>
+
+    <script>
+        // Load task history from localStorage
+        let taskHistory = JSON.parse(localStorage.getItem("taskHistory")) || [];
+
+        // Load current task ID from localStorage
+        let currentTaskId = localStorage.getItem("currentTaskId");
+
+        // Function to update task history in the UI
+        function updateTaskHistory() {
+            const taskHistoryList = document.getElementById("taskHistory");
+            taskHistoryList.innerHTML = taskHistory
+                .map(
+                    (task, index) => `
+                    <li class="bg-white p-4 rounded-lg shadow-md">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="text-gray-700"><strong>Task ${index + 1}:</strong> ${task.url}</p>
+                                <p class="text-gray-500">Crop Ranges: ${task.cropRanges}</p>
+                                <p class="text-gray-500">Slow Motion: ${task.slowMotion ? "Enabled" : "Disabled"}</p>
+                                <p class="text-gray-500">Status: ${task.status}</p>
+                            </div>
+                            <div class="flex space-x-4 items-center">
+                                <div class="flex space-x-2">
+                                    <div class="progress-circle" style="--progress: ${Math.round(task.download_progress)}%">
+                                        <span>${Math.round(task.download_progress)}%</span>
+                                    </div>
+                                    <div class="progress-circle" style="--progress: ${Math.round(task.crop_progress)}%">
+                                        <span>${Math.round(task.crop_progress)}%</span>
+                                    </div>
+                                    <div class="progress-circle" style="--progress: ${Math.round(task.merge_progress)}%">
+                                        <span>${Math.round(task.merge_progress)}%</span>
+                                    </div>
+                                </div>
+                                ${task.status === "In Progress" ? `
+                                    <button onclick="cancelTask('${task.task_id}')"
+                                        class="bg-red-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-700 transition duration-300">
+                                        Cancel
+                                    </button>
+                                ` : ""}
+                            </div>
+                        </div>
+                    </li>
+                `
+                )
+                .join("");
+        }
+
+        // Update task history on page load
+        updateTaskHistory();
+
+        // Poll for task status if there's an active task
+        if (currentTaskId) {
+            pollTaskStatus(currentTaskId);
+        }
+
+        document.getElementById("videoForm").addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            // Disable the button to prevent multiple clicks
+            const generateButton = document.getElementById("generateButton");
+            generateButton.disabled = true;
+            generateButton.textContent = "Processing...";
+
+            const url = document.getElementById("url").value;
+            const cropRanges = document.getElementById("cropRanges").value;
+            const slowMotion = document.getElementById("slowMotion").checked;
+
+            // Start processing
+            const formData = new FormData();
+            formData.append("url", url);
+            formData.append("crop_ranges", cropRanges);
+            formData.append("slow_motion", slowMotion);
+
+            try {
+                // Start the task
+                const response = await fetch("http://localhost:8000/process-video/", {
+                    method: "POST",
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    throw new Error("Failed to start task");
+                }
+
+                const { task_id } = await response.json();
+                currentTaskId = task_id;
+                localStorage.setItem("currentTaskId", task_id);
+
+                // Add task to history
+                const task = {
+                    url,
+                    cropRanges,
+                    slowMotion,
+                    status: "In Progress",
+                    download_progress: 0,
+                    crop_progress: 0,
+                    merge_progress: 0,
+                    task_id,
+                };
+                taskHistory.push(task);
+                localStorage.setItem("taskHistory", JSON.stringify(taskHistory));
+                updateTaskHistory();
+
+                // Start polling for task status
+                pollTaskStatus(task_id);
+            } catch (error) {
+                console.error("Error:", error);
+                alert("An error occurred. Please try again.");
+
+                // Update task status
+                if (currentTaskId) {
+                    const task = taskHistory.find((t) => t.task_id === currentTaskId);
+                    if (task) {
+                        task.status = "Failed";
+                        localStorage.setItem("taskHistory", JSON.stringify(taskHistory));
+                        updateTaskHistory();
+                    }
+                }
+
+                // Re-enable the button
+                generateButton.disabled = false;
+                generateButton.textContent = "Generate Video";
+            }
+        });
+
+        // Poll task status
+        async function pollTaskStatus(task_id) {
+            try {
+                const statusResponse = await fetch(`http://localhost:8000/task-status/${task_id}`);
+                if (!statusResponse.ok) {
+                    throw new Error("Failed to fetch task status");
+                }
+
+                const { status, download_progress, crop_progress, merge_progress, output_file } = await statusResponse.json();
+
+                // Update task progress
+                const task = taskHistory.find((t) => t.task_id === task_id);
+                if (task) {
+                    task.download_progress = download_progress || 0;
+                    task.crop_progress = crop_progress || 0;
+                    task.merge_progress = merge_progress || 0;
+                    task.status = status;
+                    localStorage.setItem("taskHistory", JSON.stringify(taskHistory));
+                    updateTaskHistory();
+
+                    if (status === "Completed") {
+                        // Show download link
+                        document.getElementById("downloadLink").href = `http://localhost:8000/${output_file}`;
+                        document.getElementById("result").classList.remove("hidden");
+
+                        // Re-enable the button
+                        const generateButton = document.getElementById("generateButton");
+                        generateButton.disabled = false;
+                        generateButton.textContent = "Generate Video";
+
+                        // Clear current task ID
+                        localStorage.removeItem("currentTaskId");
+                        currentTaskId = null;
+                        return;
+                    } else if (status.startsWith("Failed") || status === "Cancelled") {
+                        // Re-enable the button
+                        const generateButton = document.getElementById("generateButton");
+                        generateButton.disabled = false;
+                        generateButton.textContent = "Generate Video";
+
+                        // Clear current task ID
+                        localStorage.removeItem("currentTaskId");
+                        currentTaskId = null;
+                        return;
+                    }
+                }
+
+                setTimeout(() => pollTaskStatus(task_id), 5000); // Poll every 5 seconds
+            } catch (error) {
+                console.error("Error:", error);
+                alert("Failed to fetch task status");
+            }
+        }
+
+        // Cancel task
+        async function cancelTask(task_id) {
+            try {
+                const response = await fetch(`http://localhost:8000/cancel-task/${task_id}`, {
+                    method: "POST",
+                });
+
+                if (!response.ok) {
+                    throw new Error("Failed to cancel task");
+                }
+
+                alert("Task cancelled");
+
+                // Update task status in history
+                const task = taskHistory.find((t) => t.task_id === task_id);
+                if (task) {
+                    task.status = "Cancelled";
+                    localStorage.setItem("taskHistory", JSON.stringify(taskHistory));
+                    updateTaskHistory();
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                alert("Failed to cancel task");
+            }
+        }
+    </script>
+</body>
+</html>

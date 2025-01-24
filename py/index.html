@@ -130,7 +130,7 @@
 
     // Adjust the fetch URL if you're proxying behind /api/ or a different path
     // For example: "/api/process-video/" if Nginx rewrites to FastAPI
-    const endpoint = "http://https://clipcraft.store/api/process-video/";
+    const endpoint = "https://clipcraft.store/api/process-video/";
 
     try {
       const resp = await fetch(endpoint, {
@@ -155,7 +155,7 @@
   // 3) Refresh Task List
   async function refreshTasks() {
     // If hosting behind /api, adjust the URL as needed
-    const endpoint = `http://https://clipcraft.store/api/list-tasks?user_id=${userId}`;
+    const endpoint = `https://clipcraft.store/api/list-tasks?user_id=${userId}`;
 
     try {
       const resp = await fetch(endpoint);
@@ -212,7 +212,7 @@
   // 4) Cancel Task
   async function cancelTask(taskId) {
     // If behind /api, adjust as needed
-    const endpoint = `http://https://clipcraft.store/api/cancel-task/${taskId}?user_id=${userId}`;
+    const endpoint = `https://clipcraft.store/api/cancel-task/${taskId}?user_id=${userId}`;
 
     try {
       const resp = await fetch(endpoint, { method: "POST" });

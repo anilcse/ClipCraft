@@ -1,118 +1,237 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Video Cutter</title>
   <meta charset="UTF-8" />
+  <title>ClipCraft</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body>
-  <h1>Video Cutter Demo</h1>
+<body class="bg-gray-100 text-gray-800">
 
-  <div>
-    <label>YouTube URL:</label>
-    <input type="text" id="videoUrl" size="50" />
-  </div>
-  <div>
-    <label>Crop Ranges (space separated, e.g. "00:00:00-00:00:10 00:00:15-00:00:20"):</label>
-    <input type="text" id="cropRanges" size="60" />
-  </div>
-  <div>
-    <label>Slow Motion?</label>
-    <input type="checkbox" id="slowMotion" />
-  </div>
-  <div>
-    <label>Override Existing Segments?</label>
-    <input type="checkbox" id="overrideSegments" />
-  </div>
-  <button onclick="startTask()">Start Task</button>
+<!-- Page Container -->
+<div class="max-w-4xl mx-auto p-4">
 
-  <hr />
+  <!-- Header -->
+  <div class="my-6 text-center">
+    <h1 class="text-3xl font-bold mb-2">ClipCraft</h1>
+    <p class="text-gray-600">
+      Enter a YouTube URL, define your crop ranges, and optionally enable slow motion.
+    </p>
+  </div>
 
-  <button onclick="refreshTasks()">Refresh My Tasks</button>
-  <h2>My Task History</h2>
-  <ul id="tasksList"></ul>
+  <!-- Form Section -->
+  <div class="bg-white rounded shadow p-6 mb-6">
+    <h2 class="text-xl font-semibold mb-4">Create a new task</h2>
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <!-- URL Input -->
+      <div class="flex flex-col">
+        <label for="videoUrl" class="font-semibold mb-1">YouTube URL</label>
+        <input 
+          type="text" 
+          id="videoUrl" 
+          class="p-2 border border-gray-300 rounded" 
+          placeholder="https://www.youtube.com/watch?v=..."
+        />
+      </div>
+
+      <!-- Crop Ranges -->
+      <div class="flex flex-col">
+        <label for="cropRanges" class="font-semibold mb-1">
+          Crop Ranges 
+          <span class="text-sm text-gray-500">(space-separated, e.g. 00:00:05-00:00:15 00:01:00-00:01:10)</span>
+        </label>
+        <input 
+          type="text" 
+          id="cropRanges" 
+          class="p-2 border border-gray-300 rounded" 
+          placeholder="00:00:05-00:00:15 00:01:00-00:01:10" 
+        />
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 gap-4 mt-4 md:grid-cols-2">
+      <!-- Slow Motion Check -->
+      <div class="flex items-center">
+        <input 
+          type="checkbox" 
+          id="slowMotion" 
+          class="mr-2 h-5 w-5 text-blue-600 accent-blue-600"
+        />
+        <label for="slowMotion" class="font-semibold">Enable Slow Motion</label>
+      </div>
+
+      <!-- Override Segments Check -->
+      <div class="flex items-center">
+        <input 
+          type="checkbox" 
+          id="overrideSegments" 
+          class="mr-2 h-5 w-5 text-blue-600 accent-blue-600"
+        />
+        <label for="overrideSegments" class="font-semibold">Override Existing Segments</label>
+      </div>
+    </div>
+
+    <!-- Create Task Button -->
+    <div class="mt-6">
+      <button 
+        onclick="startTask()" 
+        class="px-4 py-2 bg-blue-600 text-white rounded shadow hover:bg-blue-700"
+      >
+        Start Task
+      </button>
+    </div>
+  </div>
+
+  <!-- Task History Section -->
+  <div class="bg-white rounded shadow p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-semibold">My Tasks</h2>
+      <button 
+        onclick="refreshTasks()" 
+        class="px-3 py-1 bg-green-600 text-white rounded shadow hover:bg-green-700"
+      >
+        Refresh
+      </button>
+    </div>
+    <ul id="tasksList" class="space-y-4">
+      <!-- Populated dynamically with JavaScript -->
+    </ul>
+  </div>
+
+</div>
 
 <script>
   // 1) Ensure we have a user_id in localStorage
   if (!localStorage.getItem("user_id")) {
-    // e.g. random or generated
+    // Generate a random user_id for demo
     localStorage.setItem("user_id", "user_" + Math.floor(Math.random() * 999999));
   }
   const userId = localStorage.getItem("user_id");
 
+  // 2) Start Task
   async function startTask() {
     const url = document.getElementById("videoUrl").value.trim();
     const cropRanges = document.getElementById("cropRanges").value.trim();
     const slowMotion = document.getElementById("slowMotion").checked;
-    const overrideSegs = document.getElementById("overrideSegments").checked;
+    const overrideSegments = document.getElementById("overrideSegments").checked;
 
     if (!url || !cropRanges) {
-      alert("Please fill in URL and crop ranges.");
+      alert("Please fill in both URL and crop ranges.");
       return;
     }
 
-    // Post form data to /process-video/
     const formData = new FormData();
     formData.append("url", url);
     formData.append("crop_ranges", cropRanges);
     formData.append("slow_motion", slowMotion.toString());
-    formData.append("override_segments", overrideSegs.toString());
+    formData.append("override_segments", overrideSegments.toString());
     formData.append("user_id", userId);
 
+    // Adjust the fetch URL if you're proxying behind /api/ or a different path
+    // For example: "/api/process-video/" if Nginx rewrites to FastAPI
+    const endpoint = "http://localhost:8000/process-video/";
+
     try {
-      const response = await fetch("http://localhost:8000/process-video/", {
+      const resp = await fetch(endpoint, {
         method: "POST",
         body: formData
       });
-      const data = await response.json();
-      if (!response.ok) {
-        alert("Error: " + data.message);
-      } else {
-        alert("Task started. Task ID: " + data.task_id);
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        alert("Error: " + (data.message || "Unknown error"));
+        return;
       }
+      alert("Task started: " + data.task_id);
+      // Refresh tasks to see the new one
       refreshTasks();
-    } catch (err) {
-      console.error("Error starting task:", err);
+    } catch (error) {
+      console.error(error);
+      alert("Failed to start the task. Check console for more details.");
     }
   }
 
+  // 3) Refresh Task List
   async function refreshTasks() {
+    // If hosting behind /api, adjust the URL as needed
+    const endpoint = `http://localhost:8000/list-tasks?user_id=${userId}`;
+
     try {
-      const response = await fetch("http://localhost:8000/list-tasks?user_id=" + userId);
-      const tasks = await response.json();
+      const resp = await fetch(endpoint);
+      const tasks = await resp.json();
+
       const tasksList = document.getElementById("tasksList");
       tasksList.innerHTML = "";
+
       tasks.forEach(task => {
         const li = document.createElement("li");
+        li.className = "border p-4 rounded shadow-sm";
+
+        let outputContent = "N/A";
+        if (task.output_file) {
+          // If you have a route to serve the output file, link to it
+          // e.g., <a href="...">Download</a>
+          // For now, we just display the path
+          outputContent = `<span class="text-blue-600 break-all">${task.output_file}</span>`;
+        }
+
         li.innerHTML = `
-          <b>Task ID:</b> ${task.task_id} |
-          <b>Status:</b> ${task.status} |
-          <b>Progress:</b> ${task.progress} |
-          <b>Output:</b> ${task.output_file ? task.output_file : "N/A"} |
-          <button onclick="cancelTask('${task.task_id}')">Cancel</button>
+          <div class="flex flex-col md:flex-row md:justify-between md:items-center">
+            <div class="mb-2 md:mb-0">
+              <p><strong>Task ID:</strong> ${task.task_id}</p>
+              <p><strong>URL:</strong> ${task.url}</p>
+              <p><strong>Created At:</strong> ${task.created_at ? task.created_at : "Unknown"}</p>
+            </div>
+            <div>
+              <p><strong>Status:</strong> ${task.status}</p>
+              <p><strong>Progress:</strong> ${task.progress}</p>
+              <p><strong>Output:</strong> ${outputContent}</p>
+            </div>
+          </div>
+          <div class="mt-2 text-right">
+            ${task.status !== "Completed" && task.status !== "Cancelled" 
+              ? `<button 
+                  onclick="cancelTask('${task.task_id}')"
+                  class="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                >
+                  Cancel
+                </button>` 
+              : ""
+            }
+          </div>
         `;
         tasksList.appendChild(li);
       });
-    } catch (err) {
-      console.error("Error fetching tasks:", err);
+    } catch (error) {
+      console.error(error);
+      alert("Failed to fetch tasks.");
     }
   }
 
+  // 4) Cancel Task
   async function cancelTask(taskId) {
+    // If behind /api, adjust as needed
+    const endpoint = `http://localhost:8000/cancel-task/${taskId}?user_id=${userId}`;
+
     try {
-      const response = await fetch("http://localhost:8000/cancel-task/" + taskId + "?user_id=" + userId, {
-        method: "POST"
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        alert("Error: " + data.message);
-      } else {
-        alert(data.message);
-        refreshTasks();
+      const resp = await fetch(endpoint, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) {
+        alert("Error: " + (data.message || "Unknown error"));
+        return;
       }
-    } catch (err) {
-      console.error("Error cancelling task:", err);
+      alert(data.message);
+      refreshTasks();
+    } catch (error) {
+      console.error(error);
+      alert("Failed to cancel task.");
     }
   }
+
+  // Initial fetch
+  refreshTasks();
 </script>
+
 </body>
 </html>

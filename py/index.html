@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Video Cutter</title>
+  <meta charset="UTF-8" />
+</head>
+<body>
+  <h1>Video Cutter Demo</h1>
+
+  <div>
+    <label>YouTube URL:</label>
+    <input type="text" id="videoUrl" size="50" />
+  </div>
+  <div>
+    <label>Crop Ranges (space separated, e.g. "00:00:00-00:00:10 00:00:15-00:00:20"):</label>
+    <input type="text" id="cropRanges" size="60" />
+  </div>
+  <div>
+    <label>Slow Motion?</label>
+    <input type="checkbox" id="slowMotion" />
+  </div>
+  <div>
+    <label>Override Existing Segments?</label>
+    <input type="checkbox" id="overrideSegments" />
+  </div>
+  <button onclick="startTask()">Start Task</button>
+
+  <hr />
+
+  <button onclick="refreshTasks()">Refresh My Tasks</button>
+  <h2>My Task History</h2>
+  <ul id="tasksList"></ul>
+
+<script>
+  // 1) Ensure we have a user_id in localStorage
+  if (!localStorage.getItem("user_id")) {
+    // e.g. random or generated
+    localStorage.setItem("user_id", "user_" + Math.floor(Math.random() * 999999));
+  }
+  const userId = localStorage.getItem("user_id");
+
+  async function startTask() {
+    const url = document.getElementById("videoUrl").value.trim();
+    const cropRanges = document.getElementById("cropRanges").value.trim();
+    const slowMotion = document.getElementById("slowMotion").checked;
+    const overrideSegs = document.getElementById("overrideSegments").checked;
+
+    if (!url || !cropRanges) {
+      alert("Please fill in URL and crop ranges.");
+      return;
+    }
+
+    // Post form data to /process-video/
+    const formData = new FormData();
+    formData.append("url", url);
+    formData.append("crop_ranges", cropRanges);
+    formData.append("slow_motion", slowMotion.toString());
+    formData.append("override_segments", overrideSegs.toString());
+    formData.append("user_id", userId);
+
+    try {
+      const response = await fetch("http://localhost:8000/process-video/", {
+        method: "POST",
+        body: formData
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert("Error: " + data.message);
+      } else {
+        alert("Task started. Task ID: " + data.task_id);
+      }
+      refreshTasks();
+    } catch (err) {
+      console.error("Error starting task:", err);
+    }
+  }
+
+  async function refreshTasks() {
+    try {
+      const response = await fetch("http://localhost:8000/list-tasks?user_id=" + userId);
+      const tasks = await response.json();
+      const tasksList = document.getElementById("tasksList");
+      tasksList.innerHTML = "";
+      tasks.forEach(task => {
+        const li = document.createElement("li");
+        li.innerHTML = `
+          <b>Task ID:</b> ${task.task_id} |
+          <b>Status:</b> ${task.status} |
+          <b>Progress:</b> ${task.progress} |
+          <b>Output:</b> ${task.output_file ? task.output_file : "N/A"} |
+          <button onclick="cancelTask('${task.task_id}')">Cancel</button>
+        `;
+        tasksList.appendChild(li);
+      });
+    } catch (err) {
+      console.error("Error fetching tasks:", err);
+    }
+  }
+
+  async function cancelTask(taskId) {
+    try {
+      const response = await fetch("http://localhost:8000/cancel-task/" + taskId + "?user_id=" + userId, {
+        method: "POST"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert("Error: " + data.message);
+      } else {
+        alert(data.message);
+        refreshTasks();
+      }
+    } catch (err) {
+      console.error("Error cancelling task:", err);
+    }
+  }
+</script>
+</body>
+</html>

@@ -81,7 +81,7 @@ def download_video(url: str, output_path: str) -> None:
     import subprocess
     try:
         subprocess.run(
-            ["yt-dlp", "-f", "bestvideo+bestaudio", "--merge-output-format", "mp4", "-o", output_path, url],
+            ["yt-dlp", "--cookies", "./cookies.txt", "-f", "bestvideo+bestaudio", "--merge-output-format", "mp4", "-o", output_path, url],
             check=True,
         )
     except subprocess.CalledProcessError as e:
@@ -295,7 +295,7 @@ def process_video_task(
 # ---------------------------------------------------------------------
 # 5. API ENDPOINTS
 # ---------------------------------------------------------------------
-@app.post("/process-video/")
+@app.post("/process-video")
 async def process_video(
     url: str = Form(...),
     crop_ranges: str = Form(...),

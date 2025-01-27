@@ -5,7 +5,9 @@ import re
 from typing import List, Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Form
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 # --- Database imports ---
 from sqlalchemy import Column, Integer, String, Boolean, create_engine
@@ -53,6 +55,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Make sure required directories exist
 os.makedirs("inputs", exist_ok=True)
@@ -365,6 +369,29 @@ async def cancel_task(task_id: str):
     task_obj.status = "Cancelled"
     db.commit()
     return JSONResponse({"message": "Task cancelled"})
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    try:
+        with open("templates/index.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Frontend template missing")
+
+@app.get("/download/{task_id}")
+async def download_video_output(task_id: str):
+    """Endpoint to download processed video."""
+    db = next(get_db_session())
+    task = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
+    if not task or task.status != "Completed" or not task.output_file:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not os.path.exists(task.output_file):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(
+        task.output_file,
+        filename=os.path.basename(task.output_file),
+        media_type="video/mp4"
+    )
 
 # ---------------------------------------------------------------------
 # 6. RUN THE APP

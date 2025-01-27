@@ -1,237 +1,196 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <title>ClipCraft</title>
-  <!-- Tailwind CSS CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipCraft</title>
+    <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-100 text-gray-800">
+<body class="bg-gray-100 min-h-screen">
+    <div class="container max-w-4xl mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold text-gray-800 mb-8">ClipCraft: Video Processor</h1>
+        
+        <!-- Submission Form -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <form id="taskForm" class="space-y-4">
+                <div>
+                    <label class="block text-gray-700 text-sm font-medium mb-2">YouTube URL:</label>
+                    <input type="text" name="url" required
+                        class="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                
+                <div>
+                    <label class="block text-gray-700 text-sm font-medium mb-2">
+                        Crop Ranges (e.g., 00:00:10-00:00:20 00:01:00-00:01:30):
+                    </label>
+                    <input type="text" name="crop_ranges" required
+                        class="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                
+                <div class="flex items-center space-x-4">
+                    <label class="flex items-center text-gray-700 text-sm">
+                        <input type="checkbox" name="slow_motion" class="h-4 w-4 text-blue-600">
+                        <span class="ml-2">Apply Slow Motion</span>
+                    </label>
+                    
+                    <label class="flex items-center text-gray-700 text-sm">
+                        <input type="checkbox" name="override_segments" class="h-4 w-4 text-blue-600">
+                        <span class="ml-2">Override Existing Segments</span>
+                    </label>
+                </div>
+                
+                <button type="submit" id="submitBtn"
+                    class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
+                    Process Video
+                </button>
+            </form>
+        </div>
 
-<!-- Page Container -->
-<div class="max-w-4xl mx-auto p-4">
-
-  <!-- Header -->
-  <div class="my-6 text-center">
-    <h1 class="text-3xl font-bold mb-2">ClipCraft</h1>
-    <p class="text-gray-600">
-      Enter a YouTube URL, define your crop ranges, and optionally enable slow motion.
-    </p>
-  </div>
-
-  <!-- Form Section -->
-  <div class="bg-white rounded shadow p-6 mb-6">
-    <h2 class="text-xl font-semibold mb-4">Create a new task</h2>
-    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <!-- URL Input -->
-      <div class="flex flex-col">
-        <label for="videoUrl" class="font-semibold mb-1">YouTube URL</label>
-        <input 
-          type="text" 
-          id="videoUrl" 
-          class="p-2 border border-gray-300 rounded" 
-          placeholder="https://www.youtube.com/watch?v=..."
-        />
-      </div>
-
-      <!-- Crop Ranges -->
-      <div class="flex flex-col">
-        <label for="cropRanges" class="font-semibold mb-1">
-          Crop Ranges 
-          <span class="text-sm text-gray-500">(space-separated, e.g. 00:00:05-00:00:15 00:01:00-00:01:10)</span>
-        </label>
-        <input 
-          type="text" 
-          id="cropRanges" 
-          class="p-2 border border-gray-300 rounded" 
-          placeholder="00:00:05-00:00:15 00:01:00-00:01:10" 
-        />
-      </div>
+        <!-- Active Tasks -->
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Active Tasks</h2>
+        <div id="tasksList" class="space-y-4">
+            <!-- Tasks will be dynamically inserted here -->
+        </div>
     </div>
 
-    <div class="grid grid-cols-1 gap-4 mt-4 md:grid-cols-2">
-      <!-- Slow Motion Check -->
-      <div class="flex items-center">
-        <input 
-          type="checkbox" 
-          id="slowMotion" 
-          class="mr-2 h-5 w-5 text-blue-600 accent-blue-600"
-        />
-        <label for="slowMotion" class="font-semibold">Enable Slow Motion</label>
-      </div>
+    <script>
+        const API_BASE = window.location.origin;
+        let activeTasks = new Set();
+        let isProcessing = false;
 
-      <!-- Override Segments Check -->
-      <div class="flex items-center">
-        <input 
-          type="checkbox" 
-          id="overrideSegments" 
-          class="mr-2 h-5 w-5 text-blue-600 accent-blue-600"
-        />
-        <label for="overrideSegments" class="font-semibold">Override Existing Segments</label>
-      </div>
-    </div>
+        // Handle form submission
+        document.getElementById('taskForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (isProcessing) return;
+            
+            const form = e.target;
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            isProcessing = true;
+            
+            try {
+                const formData = new FormData(form);
+                const response = await fetch(`${API_BASE}/process-video`, {
+                    method: 'POST',
+                    body: new URLSearchParams(formData)
+                });
 
-    <!-- Create Task Button -->
-    <div class="mt-6">
-      <button 
-        onclick="startTask()" 
-        class="px-4 py-2 bg-blue-600 text-white rounded shadow hover:bg-blue-700"
-      >
-        Start Task
-      </button>
-    </div>
-  </div>
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to start task');
+                }
 
-  <!-- Task History Section -->
-  <div class="bg-white rounded shadow p-6">
-    <div class="flex justify-between items-center mb-4">
-      <h2 class="text-xl font-semibold">My Tasks</h2>
-      <button 
-        onclick="refreshTasks()" 
-        class="px-3 py-1 bg-green-600 text-white rounded shadow hover:bg-green-700"
-      >
-        Refresh
-      </button>
-    </div>
-    <ul id="tasksList" class="space-y-4">
-      <!-- Populated dynamically with JavaScript -->
-    </ul>
-  </div>
+                const data = await response.json();
+                activeTasks.add(data.task_id);
+                updateTasks();
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                submitBtn.disabled = false;
+                isProcessing = false;
+            }
+        });
 
-</div>
+        // Update tasks every 10 seconds
+        async function updateTasks() {
+            const tasks = Array.from(activeTasks);
+            if (tasks.length === 0) return;
 
-<script>
-  // 1) Ensure we have a user_id in localStorage
-  if (!localStorage.getItem("user_id")) {
-    // Generate a random user_id for demo
-    localStorage.setItem("user_id", "user_" + Math.floor(Math.random() * 999999));
-  }
-  const userId = localStorage.getItem("user_id");
+            try {
+                const responses = await Promise.all(
+                    tasks.map(taskId => 
+                        fetch(`${API_BASE}/task-status/${taskId}`)
+                            .then(r => r.json())
+                            .catch(error => ({ 
+                                task_id: taskId,
+                                status: `API Error: ${error.message}`,
+                                progress: 0
+                            }))
+                    )
+                );
 
-  // 2) Start Task
-  async function startTask() {
-    const url = document.getElementById("videoUrl").value.trim();
-    const cropRanges = document.getElementById("cropRanges").value.trim();
-    const slowMotion = document.getElementById("slowMotion").checked;
-    const overrideSegments = document.getElementById("overrideSegments").checked;
+                const taskElements = responses.map(task => {
+                    let actions = '';
+                    const isCompleted = task.status === 'Completed';
+                    const isFailed = task.status.startsWith('Failed') || task.status.includes('Error');
+                    
+                    if (isCompleted) {
+                        activeTasks.delete(task.task_id);
+                        actions = `
+                            <a href="${API_BASE}/download/${task.task_id}" download
+                                class="bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600 transition-colors">
+                                Download
+                            </a>
+                        `;
+                    } else if (!isFailed && task.status !== 'Cancelled') {
+                        actions = `
+                            <button onclick="cancelTask('${task.task_id}')"
+                                class="bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition-colors">
+                                Cancel
+                            </button>
+                        `;
+                    }
 
-    if (!url || !cropRanges) {
-      alert("Please fill in both URL and crop ranges.");
-      return;
-    }
+                    return `
+                        <div class="bg-white rounded-lg shadow p-4">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="font-medium text-gray-800">Task ID: ${task.task_id?.slice(0, 8) || 'N/A'}...</h3>
+                                <span class="text-sm ${getStatusColor(task.status)}">
+                                    ${task.status}
+                                </span>
+                            </div>
+                            
+                            ${!isCompleted ? `
+                            <div class="w-full bg-gray-200 rounded-full h-2 mb-4">
+                                <div class="bg-blue-500 h-2 rounded-full transition-all duration-300" 
+                                    style="width: ${task.progress}%"></div>
+                            </div>
+                            ` : ''}
+                            
+                            <div class="flex justify-end space-x-2">
+                                ${actions}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
 
-    const formData = new FormData();
-    formData.append("url", url);
-    formData.append("crop_ranges", cropRanges);
-    formData.append("slow_motion", slowMotion.toString());
-    formData.append("override_segments", overrideSegments.toString());
-    formData.append("user_id", userId);
-
-    // Adjust the fetch URL if you're proxying behind /api/ or a different path
-    // For example: "/api/process-video/" if Nginx rewrites to FastAPI
-    const endpoint = "https://clipcraft.store/api/process-video/";
-
-    try {
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        body: formData
-      });
-
-      const data = await resp.json();
-      if (!resp.ok) {
-        alert("Error: " + (data.message || "Unknown error"));
-        return;
-      }
-      alert("Task started: " + data.task_id);
-      // Refresh tasks to see the new one
-      refreshTasks();
-    } catch (error) {
-      console.error(error);
-      alert("Failed to start the task. Check console for more details.");
-    }
-  }
-
-  // 3) Refresh Task List
-  async function refreshTasks() {
-    // If hosting behind /api, adjust the URL as needed
-    const endpoint = `https://clipcraft.store/api/list-tasks?user_id=${userId}`;
-
-    try {
-      const resp = await fetch(endpoint);
-      const tasks = await resp.json();
-
-      const tasksList = document.getElementById("tasksList");
-      tasksList.innerHTML = "";
-
-      tasks.forEach(task => {
-        const li = document.createElement("li");
-        li.className = "border p-4 rounded shadow-sm";
-
-        let outputContent = "N/A";
-        if (task.output_file) {
-          // If you have a route to serve the output file, link to it
-          // e.g., <a href="...">Download</a>
-          // For now, we just display the path
-          outputContent = `<span class="text-blue-600 break-all">${task.output_file}</span>`;
+                document.getElementById('tasksList').innerHTML = taskElements;
+            } catch (error) {
+                showError('Failed to update tasks');
+            }
         }
 
-        li.innerHTML = `
-          <div class="flex flex-col md:flex-row md:justify-between md:items-center">
-            <div class="mb-2 md:mb-0">
-              <p><strong>Task ID:</strong> ${task.task_id}</p>
-              <p><strong>URL:</strong> ${task.url}</p>
-              <p><strong>Created At:</strong> ${task.created_at ? task.created_at : "Unknown"}</p>
-            </div>
-            <div>
-              <p><strong>Status:</strong> ${task.status}</p>
-              <p><strong>Progress:</strong> ${task.progress}</p>
-              <p><strong>Output:</strong> ${outputContent}</p>
-            </div>
-          </div>
-          <div class="mt-2 text-right">
-            ${task.status !== "Completed" && task.status !== "Cancelled" 
-              ? `<button 
-                  onclick="cancelTask('${task.task_id}')"
-                  class="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
-                >
-                  Cancel
-                </button>` 
-              : ""
+        function getStatusColor(status) {
+            if (status === 'Completed') return 'text-green-600';
+            if (status.startsWith('Failed') || status.includes('Error') || status === 'Cancelled') 
+                return 'text-red-600';
+            return 'text-blue-600';
+        }
+
+        function showError(message) {
+            const errorElement = document.createElement('div');
+            errorElement.className = 'bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4';
+            errorElement.innerHTML = `
+                <strong>Error:</strong> ${message}
+                <button onclick="this.parentElement.remove()" 
+                    class="float-right text-red-700 hover:text-red-900">&times;</button>
+            `;
+            document.getElementById('tasksList').prepend(errorElement);
+        }
+
+        async function cancelTask(taskId) {
+            try {
+                const response = await fetch(`${API_BASE}/cancel-task/${taskId}`, { 
+                    method: 'POST' 
+                });
+                if (!response.ok) throw new Error('Failed to cancel task');
+                updateTasks();
+            } catch (error) {
+                showError(error.message);
             }
-          </div>
-        `;
-        tasksList.appendChild(li);
-      });
-    } catch (error) {
-      console.error(error);
-      alert("Failed to fetch tasks.");
-    }
-  }
+        }
 
-  // 4) Cancel Task
-  async function cancelTask(taskId) {
-    // If behind /api, adjust as needed
-    const endpoint = `https://clipcraft.store/api/cancel-task/${taskId}?user_id=${userId}`;
-
-    try {
-      const resp = await fetch(endpoint, { method: "POST" });
-      const data = await resp.json();
-      if (!resp.ok) {
-        alert("Error: " + (data.message || "Unknown error"));
-        return;
-      }
-      alert(data.message);
-      refreshTasks();
-    } catch (error) {
-      console.error(error);
-      alert("Failed to cancel task.");
-    }
-  }
-
-  // Initial fetch
-  refreshTasks();
-</script>
-
+        // Initial update and set interval
+        updateTasks();
+        setInterval(updateTasks, 10000);
+    </script>
 </body>
 </html>

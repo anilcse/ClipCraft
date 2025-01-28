@@ -1,3 +1,5 @@
+<!-- index.html -->
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -44,8 +46,17 @@
             </button>
         </form>
 
-        <!-- Task List -->
-        <div id="tasksList" class="space-y-4"></div>
+        <!-- Active Task List -->
+        <div>
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4">Active Tasks</h2>
+            <div id="tasksList" class="space-y-4"></div>
+        </div>
+
+        <!-- Task History -->
+        <div class="mt-8">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4">Tasks History</h2>
+            <div id="tasksHistory" class="space-y-4"></div>
+        </div>
     </div>
 
     <script>
@@ -54,22 +65,26 @@
         let activeTasks = JSON.parse(localStorage.getItem('videoTasks') || '[]');
         let isProcessing = false;
 
-        // Remove user_id handling as backend does not utilize it
-        /*
-        // Generate user ID if not exists
+        // Generate or retrieve user_id from localStorage
         function getUserId() {
             let userId = localStorage.getItem('userId');
             if (!userId) {
-                userId = Math.random().toString(36).substr(2, 9);
+                userId = uuidv4();
                 localStorage.setItem('userId', userId);
             }
-            document.getElementById('userId').value = userId;
             return userId;
         }
 
-        // Initialize user ID
-        getUserId();
-        */
+        // Simple UUID generator for user_id
+        function uuidv4() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        // Retrieve user_id
+        const userId = getUserId();
 
         // showError function to display a dismissible error alert
         function showError(message) {
@@ -113,8 +128,7 @@
             
             try {
                 const formData = new FormData(form);
-                // Remove user_id as it's not used in the backend
-                // formData.append('user_id', getUserId());
+                formData.append('user_id', userId);  // Include user_id in the form data
                 
                 const response = await fetch(`${API_BASE}process-video`, {
                     method: 'POST',
@@ -130,6 +144,7 @@
                 activeTasks.push(data.task_id);
                 saveTasks();
                 updateTasks();
+                fetchTaskHistory();  // Refresh task history
             } catch (error) {
                 showError(error.message);
             } finally {
@@ -167,12 +182,12 @@
             };
         }
 
-        // Fetch and display all tasks
+        // Fetch and display all active tasks
         async function updateTasks() {
             try {
                 const responses = await Promise.all(
                     activeTasks.map(taskId => 
-                        fetch(`${API_BASE}task-status/${taskId}`)
+                        fetch(`${API_BASE}task-status/${taskId}?user_id=${userId}`)
                             .then(r => {
                                 if (!r.ok) throw new Error(`Status fetch failed for ${taskId}`);
                                 return r.json();
@@ -215,16 +230,82 @@
                 document.getElementById('tasksList').innerHTML = taskElements;
                 cleanupCompletedTasks();
             } catch (error) {
-                showError('Failed to update tasks' + error);
+                showError('Failed to update tasks');
             }
+        }
+
+        // Fetch and display task history
+        async function fetchTaskHistory() {
+            try {
+                const response = await fetch(`${API_BASE}tasks?user_id=${userId}`);
+                if (!response.ok) {
+                    throw new Error('Failed to fetch task history');
+                }
+                const tasks = await response.json();
+                const completedTasks = tasks.filter(task => 
+                    task.status.toLowerCase().includes('completed') ||
+                    task.status.toLowerCase().includes('failed') ||
+                    task.status.toLowerCase().includes('cancelled')
+                );
+
+                const historyElements = completedTasks.map(task => {
+                    const status = task.status || '';
+                    const progress = task.progress || 0;
+                    const step = getProgressStep(progress);
+
+                    return `
+                        <div class="bg-white rounded-lg shadow p-4" data-task-id="${task.task_id}">
+                            <div class="flex items-center justify-between mb-4">
+                                <div>
+                                    <h3 class="font-medium text-gray-800">
+                                        Task: ${task.task_id.slice(0, 8)}...
+                                    </h3>
+                                    <p class="text-sm text-gray-500">
+                                        ${step.label} (${progress}%)
+                                    </p>
+                                </div>
+                                <span class="text-sm ${getStatusColor(status)}">
+                                    ${status}
+                                </span>
+                            </div>
+                            
+                            <div class="w-full bg-gray-200 rounded-full h-2 mb-4">
+                                <div class="${step.color} h-2 rounded-full transition-all duration-300" 
+                                    style="width: ${progress}%"></div>
+                            </div>
+                            
+                            ${getTaskHistoryActions(task)}
+                        </div>
+                    `;
+                }).join('');
+
+                document.getElementById('tasksHistory').innerHTML = historyElements;
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        // Decide which actions to display in history (Download if completed)
+        function getTaskHistoryActions(task) {
+            if (task.status.toLowerCase().includes('completed')) {
+                return `
+                    <div class="flex justify-end space-x-2">
+                        <a href="${API_BASE}download/${task.task_id}?user_id=${userId}" download
+                            class="bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600 transition-colors">
+                            Download
+                        </a>
+                    </div>
+                `;
+            }
+            return '';
         }
 
         // Decide which actions to display (Download, Cancel, etc.)
         function getTaskActions(task) {
-            if (task.status === 'Completed') {
+            if (task.status.toLowerCase().includes('completed')) {
                 return `
                     <div class="flex justify-end space-x-2">
-                        <a href="${API_BASE}download/${task.task_id}" download
+                        <a href="${API_BASE}download/${task.task_id}?user_id=${userId}" download
                             class="bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600 transition-colors">
                             Download
                         </a>
@@ -249,7 +330,7 @@
         // Cancel a task by calling the API
         async function cancelTask(taskId) {
             try {
-                const response = await fetch(`${API_BASE}cancel-task/${taskId}`, { method: 'POST' });
+                const response = await fetch(`${API_BASE}cancel-task/${taskId}?user_id=${userId}`, { method: 'POST' });
                 if (!response.ok) {
                     const errorData = await response.json();
                     throw new Error(errorData.detail || 'Failed to cancel task');
@@ -259,6 +340,7 @@
                 activeTasks = activeTasks.filter(id => id !== taskId);
                 saveTasks();
                 updateTasks();
+                fetchTaskHistory();  // Refresh task history
             } catch (error) {
                 showError(error.message);
             }
@@ -295,9 +377,11 @@
 
         // Initial load
         updateTasks();
+        fetchTaskHistory();
 
         // Periodically update tasks every 10 seconds
         setInterval(updateTasks, 10000);
+        setInterval(fetchTaskHistory, 10000);
     </script>
 </body>
 </html>

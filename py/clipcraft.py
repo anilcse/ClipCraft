@@ -3,7 +3,7 @@ import hashlib
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Form
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Form, Depends, Query
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +35,7 @@ class VideoTask(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(String, unique=True, index=True)  # Unique task ID
+    user_id = Column(String, index=True)  # New field to associate with user
     url = Column(String)
     status = Column(String)
     progress = Column(Integer)
@@ -60,7 +61,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Consider restricting this in production
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -334,8 +335,9 @@ def process_video_task(
             lock.release()
 
     except Exception as e:
-        task_obj.status = f"Failed: {str(e)}"
-        db.commit()
+        if task_obj:
+            task_obj.status = f"Failed: {str(e)}"
+            db.commit()
     finally:
         db.close()
 
@@ -348,12 +350,14 @@ async def process_video(
     crop_ranges: str = Form(...),
     slow_motion: bool = Form(False),
     override_segments: bool = Form(False),
+    user_id: str = Form(...),  # New form parameter
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Start video processing task.
     - `override_segments`: if True, re-crops existing segments
     - `slow_motion`: if True, also produce a slow-motion copy of each segment
+    - `user_id`: unique identifier for the user
     """
     video_id = get_video_id(url)
     task_id = get_unique_task_id(url)  # Generate a unique task ID
@@ -369,6 +373,7 @@ async def process_video(
     if not task_obj:
         task_obj = VideoTask(
             task_id=task_id,  # Use the unique task ID
+            user_id=user_id,  # Associate task with user_id
             url=url,
             status="Created",
             progress=0,
@@ -386,12 +391,20 @@ async def process_video(
     return JSONResponse({"task_id": task_id, "message": "Task started"})
 
 @app.get("/task-status/{task_id}")
-async def get_task_status(task_id: str):
+async def get_task_status(task_id: str, user_id: str = Query(...)):
+    """
+    Retrieve the status and progress of a specific task.
+    - `task_id`: Unique identifier for the task
+    - `user_id`: Unique identifier for the user
+    """
     db = next(get_db_session())
-    task_obj = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
+    task_obj = db.query(VideoTask).filter(
+        VideoTask.task_id == task_id,
+        VideoTask.user_id == user_id  # Ensure task belongs to user
+    ).first()
     if not task_obj:
         return JSONResponse(status_code=404, content={"message": "Task not found"})
-
+    
     return {
         "status": task_obj.status,
         "task_id": task_id,
@@ -400,34 +413,36 @@ async def get_task_status(task_id: str):
     }
 
 @app.post("/cancel-task/{task_id}")
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, user_id: str = Query(...)):
     """
-    Demonstration cancel endpoint.
-    Doesn't forcibly kill ffmpeg in a background thread,
-    only updates DB status to 'Cancelled'.
+    Cancel a specific task.
+    - `task_id`: Unique identifier for the task
+    - `user_id`: Unique identifier for the user
     """
     db = next(get_db_session())
-    task_obj = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
+    task_obj = db.query(VideoTask).filter(
+        VideoTask.task_id == task_id,
+        VideoTask.user_id == user_id  # Ensure task belongs to user
+    ).first()
     if not task_obj or task_obj.status == "Completed":
         return JSONResponse(status_code=404, content={"message": "Task not found or already completed"})
-
+    
     task_obj.status = "Cancelled"
     db.commit()
     return JSONResponse({"message": "Task cancelled"})
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root():
-    try:
-        with open("templates/index.html", "r") as f:
-            return f.read()
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="Frontend template missing")
-
 @app.get("/download/{task_id}")
-async def download_video_output(task_id: str):
-    """Endpoint to download processed video."""
+async def download_video_output(task_id: str, user_id: str = Query(...)):
+    """
+    Endpoint to download processed video.
+    - `task_id`: Unique identifier for the task
+    - `user_id`: Unique identifier for the user
+    """
     db = next(get_db_session())
-    task = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
+    task = db.query(VideoTask).filter(
+        VideoTask.task_id == task_id,
+        VideoTask.user_id == user_id  # Ensure task belongs to user
+    ).first()
     if not task or task.status != "Completed" or not task.output_file:
         raise HTTPException(status_code=404, detail="File not found")
     if not os.path.exists(task.output_file):
@@ -437,6 +452,33 @@ async def download_video_output(task_id: str):
         filename=os.path.basename(task.output_file),
         media_type="video/mp4"
     )
+
+@app.get("/tasks")
+async def get_all_tasks(user_id: str = Query(...)):
+    """
+    Retrieve all tasks associated with a user.
+    - `user_id`: Unique identifier for the user
+    """
+    db = next(get_db_session())
+    tasks = db.query(VideoTask).filter(VideoTask.user_id == user_id).all()
+    return [
+        {
+            "task_id": task.task_id,
+            "status": task.status,
+            "progress": task.progress,
+            "output_file": task.output_file,
+            "created_at": task.created_at,
+        }
+        for task in tasks
+    ]
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    try:
+        with open("templates/index.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Frontend template missing")
 
 # ---------------------------------------------------------------------
 # 6. RUN THE APP

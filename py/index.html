@@ -1,62 +1,107 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ClipCraft</title>
+    <title>ClipCraft - Video Processor</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 min-h-screen">
     <div class="container max-w-4xl mx-auto px-4 py-8">
+        <!-- Error Alert Container (injected here) -->
+        
         <h1 class="text-3xl font-bold text-gray-800 mb-8">ClipCraft: Video Processor</h1>
         
-        <!-- Submission Form -->
-        <div class="bg-white rounded-lg shadow p-6 mb-8">
-            <form id="taskForm" class="space-y-4">
-                <div>
-                    <label class="block text-gray-700 text-sm font-medium mb-2">YouTube URL:</label>
-                    <input type="text" name="url" required
-                        class="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                </div>
+        <!-- Updated Form -->
+        <form id="taskForm" class="bg-white rounded-lg shadow p-6 mb-8 space-y-4">
+            <div>
+                <label class="block text-gray-700 text-sm font-medium mb-2">YouTube URL:</label>
+                <input type="text" name="url" required
+                    class="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            
+            <div>
+                <label class="block text-gray-700 text-sm font-medium mb-2">
+                    Crop Ranges (e.g., 00:00:10-00:00:20 00:01:00-00:01:30):
+                </label>
+                <input type="text" name="crop_ranges" required
+                    class="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            
+            <div class="flex items-center space-x-4">
+                <label class="flex items-center text-gray-700 text-sm">
+                    <input type="checkbox" name="slow_motion" class="h-4 w-4 text-blue-600">
+                    <span class="ml-2">Apply Slow Motion</span>
+                </label>
                 
-                <div>
-                    <label class="block text-gray-700 text-sm font-medium mb-2">
-                        Crop Ranges (e.g., 00:00:10-00:00:20 00:01:00-00:01:30):
-                    </label>
-                    <input type="text" name="crop_ranges" required
-                        class="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                </div>
-                
-                <div class="flex items-center space-x-4">
-                    <label class="flex items-center text-gray-700 text-sm">
-                        <input type="checkbox" name="slow_motion" class="h-4 w-4 text-blue-600">
-                        <span class="ml-2">Apply Slow Motion</span>
-                    </label>
-                    
-                    <label class="flex items-center text-gray-700 text-sm">
-                        <input type="checkbox" name="override_segments" class="h-4 w-4 text-blue-600">
-                        <span class="ml-2">Override Existing Segments</span>
-                    </label>
-                </div>
-                
-                <button type="submit" id="submitBtn"
-                    class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
-                    Process Video
-                </button>
-            </form>
-        </div>
+                <label class="flex items-center text-gray-700 text-sm">
+                    <input type="checkbox" name="override_segments" class="h-4 w-4 text-blue-600">
+                    <span class="ml-2">Override Existing Segments</span>
+                </label>
+            </div>
 
-        <!-- Active Tasks -->
-        <h2 class="text-xl font-semibold text-gray-800 mb-4">Active Tasks</h2>
-        <div id="tasksList" class="space-y-4">
-            <!-- Tasks will be dynamically inserted here -->
-        </div>
+            <button type="submit" id="submitBtn"
+                class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
+                Process Video
+            </button>
+        </form>
+
+        <!-- Task List -->
+        <div id="tasksList" class="space-y-4"></div>
     </div>
 
     <script>
-        const API_BASE = window.location.origin;
-        let activeTasks = new Set();
+        // Set API_BASE to '/' since frontend and backend are served from the same origin
+        const API_BASE = '/';
+        let activeTasks = JSON.parse(localStorage.getItem('videoTasks') || '[]');
         let isProcessing = false;
 
-        // Handle form submission
+        // Remove user_id handling as backend does not utilize it
+        /*
+        // Generate user ID if not exists
+        function getUserId() {
+            let userId = localStorage.getItem('userId');
+            if (!userId) {
+                userId = Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('userId', userId);
+            }
+            document.getElementById('userId').value = userId;
+            return userId;
+        }
+
+        // Initialize user ID
+        getUserId();
+        */
+
+        // showError function to display a dismissible error alert
+        function showError(message) {
+            // Create an alert container
+            const errorContainer = document.createElement('div');
+            errorContainer.className = "bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4";
+            errorContainer.innerHTML = `
+                <strong class="font-bold">Error:</strong>
+                <span class="block sm:inline"> ${message}</span>
+                <span class="absolute top-0 bottom-0 right-0 px-4 py-3 cursor-pointer" 
+                      onclick="this.parentElement.remove()">
+                    <svg class="fill-current h-6 w-6 text-red-500" role="button" 
+                         xmlns="http://www.w3.org/2000/svg" 
+                         viewBox="0 0 20 20">
+                        <title>Close</title>
+                        <path d="M14.348 5.652a.5.5 0 00-.707 0L10 9.293 
+                                 6.359 5.652a.5.5 0 10-.707.707L9.293 10 
+                                 5.652 13.641a.5.5 0 10.707.707L10 10.707 
+                                 13.641 14.348a.5.5 0 00.707-.707L10.707 10 
+                                 14.348 6.359a.5.5 0 000-.707z" />
+                    </svg>
+                </span>
+            `;
+
+            // Insert the alert at the top of the .container
+            const container = document.querySelector('.container');
+            container.insertBefore(errorContainer, container.firstChild);
+
+            console.error("Error:", message);
+        }
+
+        // Form submission handler
         document.getElementById('taskForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             if (isProcessing) return;
@@ -68,18 +113,22 @@
             
             try {
                 const formData = new FormData(form);
-                const response = await fetch(`${API_BASE}/process-video`, {
+                // Remove user_id as it's not used in the backend
+                // formData.append('user_id', getUserId());
+                
+                const response = await fetch(`${API_BASE}process-video`, {
                     method: 'POST',
                     body: new URLSearchParams(formData)
                 });
 
                 if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Failed to start task');
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to start task');
                 }
-
+                
                 const data = await response.json();
-                activeTasks.add(data.task_id);
+                activeTasks.push(data.task_id);
+                saveTasks();
                 updateTasks();
             } catch (error) {
                 showError(error.message);
@@ -89,107 +138,165 @@
             }
         });
 
-        // Update tasks every 10 seconds
-        async function updateTasks() {
-            const tasks = Array.from(activeTasks);
-            if (tasks.length === 0) return;
+        // Helper to return Tailwind classes based on status
+        function getStatusColor(status) {
+            const statusLower = status.toLowerCase();
+            if (statusLower.includes('failed')) return 'text-red-500';
+            if (statusLower.includes('completed')) return 'text-green-500';
+            if (statusLower.includes('cancelled')) return 'text-yellow-500';
+            return 'text-blue-500';
+        }
 
+        // Helper to get progress label/color
+        function getProgressStep(progress) {
+            if (progress <= 33) {
+                return {
+                    label: 'Downloading Video',
+                    color: 'bg-blue-500'
+                };
+            }
+            if (progress <= 66) {
+                return {
+                    label: 'Extracting Clips',
+                    color: 'bg-purple-500'
+                };
+            }
+            return {
+                label: 'Generating Output',
+                color: 'bg-green-500'
+            };
+        }
+
+        // Fetch and display all tasks
+        async function updateTasks() {
             try {
                 const responses = await Promise.all(
-                    tasks.map(taskId => 
-                        fetch(`${API_BASE}/task-status/${taskId}`)
-                            .then(r => r.json())
-                            .catch(error => ({ 
-                                task_id: taskId,
-                                status: `API Error: ${error.message}`,
-                                progress: 0
-                            }))
+                    activeTasks.map(taskId => 
+                        fetch(`${API_BASE}task-status/${taskId}`)
+                            .then(r => {
+                                if (!r.ok) throw new Error(`Status fetch failed for ${taskId}`);
+                                return r.json();
+                            })
+                            .catch(() => ({ task_id: taskId, status: 'API Error', progress: 0 }))
                     )
                 );
 
                 const taskElements = responses.map(task => {
-                    let actions = '';
-                    const isCompleted = task.status === 'Completed';
-                    const isFailed = task.status.startsWith('Failed') || task.status.includes('Error');
-                    
-                    if (isCompleted) {
-                        activeTasks.delete(task.task_id);
-                        actions = `
-                            <a href="${API_BASE}/download/${task.task_id}" download
-                                class="bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600 transition-colors">
-                                Download
-                            </a>
-                        `;
-                    } else if (!isFailed && task.status !== 'Cancelled') {
-                        actions = `
-                            <button onclick="cancelTask('${task.task_id}')"
-                                class="bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition-colors">
-                                Cancel
-                            </button>
-                        `;
-                    }
+                    const status = task.status || '';
+                    const progress = task.progress || 0;
+                    const step = getProgressStep(progress);
 
                     return `
-                        <div class="bg-white rounded-lg shadow p-4">
+                        <div class="bg-white rounded-lg shadow p-4" data-task-id="${task.task_id}">
                             <div class="flex items-center justify-between mb-4">
-                                <h3 class="font-medium text-gray-800">Task ID: ${task.task_id?.slice(0, 8) || 'N/A'}...</h3>
-                                <span class="text-sm ${getStatusColor(task.status)}">
-                                    ${task.status}
+                                <div>
+                                    <h3 class="font-medium text-gray-800">
+                                        Task: ${task.task_id.slice(0, 8)}...
+                                    </h3>
+                                    <p class="text-sm text-gray-500">
+                                        ${step.label} (${progress}%)
+                                    </p>
+                                </div>
+                                <span class="text-sm ${getStatusColor(status)}">
+                                    ${status}
                                 </span>
                             </div>
                             
-                            ${!isCompleted ? `
                             <div class="w-full bg-gray-200 rounded-full h-2 mb-4">
-                                <div class="bg-blue-500 h-2 rounded-full transition-all duration-300" 
-                                    style="width: ${task.progress}%"></div>
+                                <div class="${step.color} h-2 rounded-full transition-all duration-300" 
+                                    style="width: ${progress}%"></div>
                             </div>
-                            ` : ''}
                             
-                            <div class="flex justify-end space-x-2">
-                                ${actions}
-                            </div>
+                            ${getTaskActions(task)}
                         </div>
                     `;
                 }).join('');
 
                 document.getElementById('tasksList').innerHTML = taskElements;
+                cleanupCompletedTasks();
             } catch (error) {
-                showError('Failed to update tasks');
+                showError('Failed to update tasks' + error);
             }
         }
 
-        function getStatusColor(status) {
-            if (status === 'Completed') return 'text-green-600';
-            if (status.startsWith('Failed') || status.includes('Error') || status === 'Cancelled') 
-                return 'text-red-600';
-            return 'text-blue-600';
-        }
-
-        function showError(message) {
-            const errorElement = document.createElement('div');
-            errorElement.className = 'bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4';
-            errorElement.innerHTML = `
-                <strong>Error:</strong> ${message}
-                <button onclick="this.parentElement.remove()" 
-                    class="float-right text-red-700 hover:text-red-900">&times;</button>
+        // Decide which actions to display (Download, Cancel, etc.)
+        function getTaskActions(task) {
+            if (task.status === 'Completed') {
+                return `
+                    <div class="flex justify-end space-x-2">
+                        <a href="${API_BASE}download/${task.task_id}" download
+                            class="bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600 transition-colors">
+                            Download
+                        </a>
+                    </div>
+                `;
+            }
+            
+            if (task.status.toLowerCase().includes('failed') || task.status.toLowerCase().includes('cancelled')) {
+                return '';
+            }
+            
+            return `
+                <div class="flex justify-end space-x-2">
+                    <button onclick="cancelTask('${task.task_id}')"
+                        class="bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition-colors">
+                        Cancel
+                    </button>
+                </div>
             `;
-            document.getElementById('tasksList').prepend(errorElement);
         }
 
+        // Cancel a task by calling the API
         async function cancelTask(taskId) {
             try {
-                const response = await fetch(`${API_BASE}/cancel-task/${taskId}`, { 
-                    method: 'POST' 
-                });
-                if (!response.ok) throw new Error('Failed to cancel task');
+                const response = await fetch(`${API_BASE}cancel-task/${taskId}`, { method: 'POST' });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to cancel task');
+                }
+
+                // Remove the canceled task from the activeTasks list
+                activeTasks = activeTasks.filter(id => id !== taskId);
+                saveTasks();
                 updateTasks();
             } catch (error) {
                 showError(error.message);
             }
         }
 
-        // Initial update and set interval
+        // Remove completed, failed, or cancelled tasks from local storage
+        function cleanupCompletedTasks() {
+            // For each taskId in activeTasks, if the corresponding DOM element has 
+            // a "Completed", "Failed", or "Cancelled" label, remove it from activeTasks
+            activeTasks = activeTasks.filter(taskId => {
+                const taskDiv = document.querySelector(`[data-task-id="${taskId}"]`);
+                if (!taskDiv) return false; // if not found in DOM, remove it
+
+                const statusSpan = taskDiv.querySelector('.flex span');
+                if (!statusSpan) return true;
+
+                const statusText = statusSpan.innerText.toLowerCase();
+
+                // Keep this task in the list unless it's "completed", "failed", or "cancelled"
+                return !(
+                    statusText.includes('completed') ||
+                    statusText.includes('failed') ||
+                    statusText.includes('cancelled')
+                );
+            });
+
+            saveTasks();
+        }
+
+        // Persist tasks to localStorage
+        function saveTasks() {
+            localStorage.setItem('videoTasks', JSON.stringify(activeTasks));
+        }
+
+        // Initial load
         updateTasks();
+
+        // Periodically update tasks every 10 seconds
         setInterval(updateTasks, 10000);
     </script>
 </body>

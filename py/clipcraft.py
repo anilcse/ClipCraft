@@ -1,9 +1,10 @@
+
 import os
 import hashlib
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Form, Depends, Query
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Form, Depends, Query, File, UploadFile
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -40,8 +41,8 @@ class VideoTask(Base):
     status = Column(String)
     progress = Column(Integer)
     output_file = Column(String, nullable=True)
+    audio_file = Column(String, nullable=True)  # New field for audio
     slow_motion = Column(Boolean, default=False)
-    override_segments = Column(Boolean, default=False)
     created_at = Column(String, default=lambda: str(datetime.utcnow()))  # Timestamp for uniqueness
 
 # Create tables if not exist
@@ -71,6 +72,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Make sure required directories exist
 os.makedirs("inputs", exist_ok=True)
 os.makedirs("segments", exist_ok=True)
+os.makedirs("audios", exist_ok=True)  # Directory for uploaded audios
 os.makedirs("locks", exist_ok=True)  # Directory for file-based locks
 
 # ---------------------------------------------------------------------
@@ -246,11 +248,60 @@ def merge_videos_with_original_fps(
     # 4) Execute the merge
     out.run(quiet=True)
 
+def replace_audio(output_video: str, new_audio: str, final_output: str) -> None:
+    """
+    Replace the audio of the output video with the new audio.
+    If the new audio is shorter, loop it to match the video length.
+    """
+    try:
+        # Get video duration
+        probe = ffmpeg.probe(output_video)
+        video_duration = float(probe['format']['duration'])
+
+        # Get audio duration
+        probe = ffmpeg.probe(new_audio)
+        audio_duration = float(probe['format']['duration'])
+
+        # Calculate number of loops needed
+        loops = int(video_duration // audio_duration) + 1
+
+        # Create a temporary file with the looped audio
+        looped_audio = os.path.join("audios", f"looped_{uuid.uuid4().hex}.m4a")  # Use .m4a for AAC
+        os.makedirs("audios", exist_ok=True)
+
+        # Loop the audio to match the video duration
+        (
+            ffmpeg
+            .input(new_audio, stream_loop=loops)
+            .output(looped_audio, t=video_duration, acodec="aac")
+            .overwrite_output()
+            .run(quiet=True)
+        )
+
+        # Replace audio in the video by mapping streams correctly
+        video_input = ffmpeg.input(output_video)
+        audio_input = ffmpeg.input(looped_audio)
+
+        (
+            ffmpeg
+            .output(video_input.video, audio_input.audio, final_output, vcodec='copy', acodec='aac')
+            .overwrite_output()
+            .run(quiet=True)
+        )
+
+        # Clean up temporary looped audio
+        os.remove(looped_audio)
+
+    except ffmpeg.Error as e:
+        raise HTTPException(status_code=500, detail=f"Failed to replace audio: {e.stderr.decode()}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error during audio replacement: {str(e)}")
+
 # ---------------------------------------------------------------------
 # 4. BACKGROUND TASK FOR VIDEO PROCESSING
 # ---------------------------------------------------------------------
 def process_video_task(
-    task_id: str, url: str, crop_ranges: str, slow_motion: bool, override_segments: bool
+    task_id: str, url: str, crop_ranges: str, slow_motion: bool, audio_file: Optional[str]
 ):
     """
     Steps:
@@ -258,7 +309,8 @@ def process_video_task(
       2) Download the original video (if missing).
       3) Crop or slow-mo segments individually (no forced FPS).
       4) Merge them with the original FPS.
-      5) Release the lock.
+      5) Replace audio if provided.
+      6) Release the lock.
     """
     db = SessionLocal()
     try:
@@ -301,8 +353,7 @@ def process_video_task(
                     segments_dir, f"{start_time}_{end_time}_normal.mp4"
                 )
 
-                if override_segments or not os.path.exists(normal_seg):
-                    crop_video(input_video_path, normal_seg, start_time, end_time)
+                crop_video(input_video_path, normal_seg, start_time, end_time)
 
                 segment_paths.append(normal_seg)
 
@@ -310,8 +361,7 @@ def process_video_task(
                     slow_seg = os.path.join(
                         segments_dir, f"{start_time}_{end_time}_slow.mp4"
                     )
-                    if override_segments or not os.path.exists(slow_seg):
-                        apply_slow_motion(normal_seg, slow_seg)
+                    apply_slow_motion(normal_seg, slow_seg)
                     segment_paths.append(slow_seg)
 
                 # Update progress (roughly from 20% -> 70%)
@@ -322,12 +372,20 @@ def process_video_task(
             task_obj.status = "Merging segments"
             db.commit()
 
-            output_file = os.path.join("segments", video_id, f"{video_id}_merged_output.mp4")
-            merge_videos_with_original_fps(segment_paths, input_video_path, output_file)
+            merged_output = os.path.join("segments", video_id, f"{video_id}_merged_output.mp4")
+            merge_videos_with_original_fps(segment_paths, input_video_path, merged_output)
+
+            # 4) Replace audio if provided
+            final_output = merged_output
+            if audio_file:
+                final_output = os.path.join("segments", video_id, f"{video_id}_final_output.mp4")
+                replace_audio(merged_output, audio_file, final_output)
+                os.remove(merged_output)  # Remove the merged output without new audio
+                task_obj.audio_file = audio_file  # Store audio file path
 
             task_obj.status = "Completed"
             task_obj.progress = 100
-            task_obj.output_file = output_file
+            task_obj.output_file = final_output
             db.commit()
 
         finally:
@@ -349,14 +407,14 @@ async def process_video(
     url: str = Form(...),
     crop_ranges: str = Form(...),
     slow_motion: bool = Form(False),
-    override_segments: bool = Form(False),
+    audio: Optional[UploadFile] = File(None),  # New audio file upload
     user_id: str = Form(...),  # New form parameter
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Start video processing task.
-    - `override_segments`: if True, re-crops existing segments
     - `slow_motion`: if True, also produce a slow-motion copy of each segment
+    - `audio`: optional audio file to override video audio
     - `user_id`: unique identifier for the user
     """
     video_id = get_video_id(url)
@@ -370,6 +428,13 @@ async def process_video(
             content={"message": "A task for this video is already in progress"}
         )
 
+    audio_file_path = None
+    if audio:
+        audio_filename = f"{uuid.uuid4().hex}_{audio.filename}"
+        audio_file_path = os.path.join("audios", audio_filename)
+        with open(audio_file_path, "wb") as f:
+            f.write(await audio.read())
+
     if not task_obj:
         task_obj = VideoTask(
             task_id=task_id,  # Use the unique task ID
@@ -377,8 +442,8 @@ async def process_video(
             url=url,
             status="Created",
             progress=0,
-            slow_motion=slow_motion,
-            override_segments=override_segments
+            audio_file=audio_file_path,
+            slow_motion=slow_motion
         )
         db.add(task_obj)
         db.commit()
@@ -386,7 +451,7 @@ async def process_video(
 
     background_tasks.add_task(
         process_video_task,
-        task_id, url, crop_ranges, slow_motion, override_segments
+        task_id, url, crop_ranges, slow_motion, audio_file_path
     )
     return JSONResponse({"task_id": task_id, "message": "Task started"})
 
@@ -404,7 +469,7 @@ async def get_task_status(task_id: str, user_id: str = Query(...)):
     ).first()
     if not task_obj:
         return JSONResponse(status_code=404, content={"message": "Task not found"})
-    
+
     return {
         "status": task_obj.status,
         "task_id": task_id,
@@ -426,7 +491,7 @@ async def cancel_task(task_id: str, user_id: str = Query(...)):
     ).first()
     if not task_obj or task_obj.status == "Completed":
         return JSONResponse(status_code=404, content={"message": "Task not found or already completed"})
-    
+
     task_obj.status = "Cancelled"
     db.commit()
     return JSONResponse({"message": "Task cancelled"})

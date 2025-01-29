@@ -11,7 +11,10 @@ build/
 env/
 venv/
 ENV/
-
+target/
+py/inputs/
+py/segments/
+py/task*
 # Byte-compiled / optimized / DLL files
 *.pyc
 

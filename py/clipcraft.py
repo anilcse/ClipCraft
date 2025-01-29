@@ -1,4 +1,3 @@
-
 import os
 import hashlib
 import uuid
@@ -9,12 +8,16 @@ from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import fcntl
+from pydantic import BaseModel
+import requests
 
 # --- Database imports ---
-from sqlalchemy import Column, Integer, String, Boolean, create_engine
+from sqlalchemy import Column, Integer, String, Boolean, create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker  # Updated import
 from sqlalchemy.sql import text  # Add this import
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import QueuePool
+from sqlalchemy import exc
 
 # --- ffmpeg-python ---
 import ffmpeg
@@ -23,10 +26,42 @@ import ffmpeg
 # 1. DATABASE SETUP (SQLite)
 # ---------------------------------------------------------------------
 
-DATABASE_URL = "sqlite:///./tasks.db"  # Switch back to SQLite
+DATABASE_URL = "sqlite:///./tasks.db"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Configure the engine with larger pool size and longer timeout
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=QueuePool,
+    pool_size=20,  # Increase pool size
+    max_overflow=30,  # Increase max overflow
+    pool_timeout=60,  # Increase timeout
+    pool_pre_ping=True  # Enable connection testing
+)
+
+# Add event listeners to handle connection issues
+@event.listens_for(engine, 'connect')
+def connect(dbapi_connection, connection_record):
+    connection_record.info['pid'] = os.getpid()
+
+@event.listens_for(engine, 'checkout')
+def checkout(dbapi_connection, connection_record, connection_proxy):
+    pid = os.getpid()
+    if connection_record.info['pid'] != pid:
+        connection_record.connection = connection_proxy.connection = None
+        raise exc.DisconnectionError(
+            "Connection record belongs to pid %s, "
+            "attempting to check out in pid %s" %
+            (connection_record.info['pid'], pid)
+        )
+
+# Update the session factory
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    expire_on_commit=False  # Prevent expired object issues
+)
 
 Base = declarative_base()  # Updated usage
 
@@ -35,15 +70,16 @@ class VideoTask(Base):
     __tablename__ = "videotasks"
 
     id = Column(Integer, primary_key=True, index=True)
-    task_id = Column(String, unique=True, index=True)  # Unique task ID
-    user_id = Column(String, index=True)  # New field to associate with user
+    task_id = Column(String, unique=True, index=True)
+    user_id = Column(String, index=True)
     url = Column(String)
     status = Column(String)
     progress = Column(Integer)
     output_file = Column(String, nullable=True)
-    audio_file = Column(String, nullable=True)  # New field for audio
+    audio_file = Column(String, nullable=True)
     slow_motion = Column(Boolean, default=False)
-    created_at = Column(String, default=lambda: str(datetime.utcnow()))  # Timestamp for uniqueness
+    created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+    completed_at = Column(String, nullable=True)
 
 # Create tables if not exist
 Base.metadata.create_all(bind=engine)
@@ -68,12 +104,26 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/assets/audios", StaticFiles(directory="assets/audios"), name="audio_files")
 
 # Make sure required directories exist
 os.makedirs("inputs", exist_ok=True)
 os.makedirs("segments", exist_ok=True)
 os.makedirs("audios", exist_ok=True)  # Directory for uploaded audios
 os.makedirs("locks", exist_ok=True)  # Directory for file-based locks
+os.makedirs("assets/audios", exist_ok=True)  # Directory for static audio files
+
+# Copy your test audio file to assets/audios if it doesn't exist
+test_audio_file = "assets/audios/lost-in-dreams-abstract-chill-downtempo-cinematic-future-beats-270241.mp3"
+if not os.path.exists(test_audio_file):
+    # Create a placeholder file or copy from your source
+    try:
+        import shutil
+        source_file = "path/to/your/source/audio.mp3"  # Update this path
+        if os.path.exists(source_file):
+            shutil.copy2(source_file, test_audio_file)
+    except Exception as e:
+        print(f"Warning: Could not setup test audio file: {e}")
 
 # ---------------------------------------------------------------------
 # 3. HELPER FUNCTIONS
@@ -82,7 +132,13 @@ def get_db_session():
     """Helper to get a new SQLAlchemy session."""
     db = SessionLocal()
     try:
+        # Test the connection
+        db.execute(text("SELECT 1"))
         yield db
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -301,59 +357,49 @@ def replace_audio(output_video: str, new_audio: str, final_output: str) -> None:
 # 4. BACKGROUND TASK FOR VIDEO PROCESSING
 # ---------------------------------------------------------------------
 def process_video_task(
-    task_id: str, url: str, crop_ranges: str, slow_motion: bool, audio_file: Optional[str]
+    task_id: str, 
+    url: str, 
+    crop_ranges: str, 
+    audio_url: Optional[str] = None, 
+    slow_motion: bool = False
 ):
-    """
-    Steps:
-      1) Acquire a lock for the video.
-      2) Download the original video (if missing).
-      3) Crop or slow-mo segments individually (no forced FPS).
-      4) Merge them with the original FPS.
-      5) Replace audio if provided.
-      6) Release the lock.
-    """
     db = SessionLocal()
     try:
-        task_obj = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
-        if not task_obj:
+        task = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
+        if not task:
+            print(f"Task {task_id} not found")
             return
 
-        # Acquire a lock for the video
-        video_id = get_video_id(url)
-        lock = get_video_lock(video_id)
-        lock.acquire()
-
         try:
-            # 1) Download
-            task_obj.status = "Downloading video"
-            task_obj.progress = 0
+            # Update initial status
+            task.status = "Processing"
+            task.progress = 10
             db.commit()
 
-            input_video_path = os.path.join("inputs", f"{video_id}.mp4")
+            # Process video
+            video_id = get_video_id(url)
+            input_path = os.path.join("inputs", f"{video_id}.mp4")
 
-            if not os.path.exists(input_video_path):
-                download_video(url, input_video_path)
+            if not os.path.exists(input_path):
+                download_video(url, input_path)
 
-            task_obj.status = "Video downloaded"
-            task_obj.progress = 20
+            task.status = "Video downloaded"
+            task.progress = 20
             db.commit()
 
-            # 2) Crop / Slow-mo
-            task_obj.status = "Cropping segments"
-            db.commit()
-
-            crop_list = crop_ranges.split()
+            # Process segments
+            segments = crop_ranges.split()
             segment_paths = []
             segments_dir = os.path.join("segments", video_id)
             os.makedirs(segments_dir, exist_ok=True)
 
-            for i, crange in enumerate(crop_list):
+            for i, crange in enumerate(segments):
                 start_time, end_time = crange.split("-")
                 normal_seg = os.path.join(
                     segments_dir, f"{start_time}_{end_time}_normal.mp4"
                 )
 
-                crop_video(input_video_path, normal_seg, start_time, end_time)
+                crop_video(input_path, normal_seg, start_time, end_time)
 
                 segment_paths.append(normal_seg)
 
@@ -365,95 +411,147 @@ def process_video_task(
                     segment_paths.append(slow_seg)
 
                 # Update progress (roughly from 20% -> 70%)
-                task_obj.progress = int(20 + (i + 1) / len(crop_list) * 50)
+                task.progress = int(20 + (i + 1) / len(segments) * 50)
                 db.commit()
 
-            # 3) Merge using the original video's FPS
-            task_obj.status = "Merging segments"
-            db.commit()
-
+            # Merge segments
             merged_output = os.path.join("segments", video_id, f"{video_id}_merged_output.mp4")
-            merge_videos_with_original_fps(segment_paths, input_video_path, merged_output)
+            merge_videos_with_original_fps(segment_paths, input_path, merged_output)
 
-            # 4) Replace audio if provided
-            final_output = merged_output
-            if audio_file:
-                final_output = os.path.join("segments", video_id, f"{video_id}_final_output.mp4")
-                replace_audio(merged_output, audio_file, final_output)
-                os.remove(merged_output)  # Remove the merged output without new audio
-                task_obj.audio_file = audio_file  # Store audio file path
-
-            task_obj.status = "Completed"
-            task_obj.progress = 100
-            task_obj.output_file = final_output
+            task.status = "Merging segments"
             db.commit()
 
-        finally:
-            # Release the lock
-            lock.release()
+            # Handle audio if provided
+            if audio_url:
+                # Download and process audio
+                audio_path = download_audio_from_url(audio_url)
+                final_output = os.path.join("segments", video_id, f"{video_id}_final_output.mp4")
+                replace_audio(merged_output, audio_path, final_output)
+                os.remove(merged_output)  # Remove the merged output without new audio
+                task.audio_file = audio_path  # Store audio file path
+            else:
+                final_output = merged_output
+
+            # Update final status with completion time
+            task.status = "Completed"
+            task.progress = 100
+            task.output_file = final_output
+            task.completed_at = datetime.utcnow().isoformat()
+            db.commit()
+
+        except Exception as e:
+            print(f"Error processing task {task_id}: {str(e)}")
+            task.status = "Failed"
+            task.progress = 0
+            task.completed_at = datetime.utcnow().isoformat()
+            db.commit()
+            raise
 
     except Exception as e:
-        if task_obj:
-            task_obj.status = f"Failed: {str(e)}"
-            db.commit()
+        print(f"Error in process_video_task: {e}")
+        if db:
+            try:
+                task = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
+                if task:
+                    task.status = "Failed"
+                    task.progress = 0
+                    task.completed_at = datetime.utcnow().isoformat()
+                    db.commit()
+            except:
+                db.rollback()
+        raise
     finally:
-        db.close()
+        if db:
+            db.close()
+
+# Add helper function for audio download
+def download_audio_from_url(audio_url: str) -> str:
+    try:
+        # Remove leading slash if present
+        if audio_url.startswith('/'):
+            audio_url = audio_url[1:]
+        
+        # Check if file exists locally
+        if os.path.exists(audio_url):
+            return audio_url
+            
+        # If it's a remote URL, download it
+        if audio_url.startswith(('http://', 'https://')):
+            filename = os.path.basename(audio_url)
+            local_path = os.path.join("audios", filename)
+            
+            response = requests.get(audio_url)
+            response.raise_for_status()
+            
+            with open(local_path, 'wb') as f:
+                f.write(response.content)
+            
+            return local_path
+            
+        return audio_url
+    except Exception as e:
+        print(f"Error downloading audio: {str(e)}")
+        raise
 
 # ---------------------------------------------------------------------
 # 5. API ENDPOINTS
 # ---------------------------------------------------------------------
+class VideoProcessRequest(BaseModel):
+    url: str
+    crop_ranges: str
+    audio_url: Optional[str] = None
+    slow_motion: bool = False
+    user_id: str  # Add this field
+
+# Add status constants at the top of the file
+class TaskStatus:
+    QUEUED = "Queued"
+    PROCESSING = "Processing"
+    COMPLETED = "Completed"
+    FAILED = "Failed"
+    CANCELLED = "Cancelled"
+
 @app.post("/process-video")
 async def process_video(
-    url: str = Form(...),
-    crop_ranges: str = Form(...),
-    slow_motion: bool = Form(False),
-    audio: Optional[UploadFile] = File(None),  # New audio file upload
-    user_id: str = Form(...),  # New form parameter
-    background_tasks: BackgroundTasks = BackgroundTasks(),
+    request: VideoProcessRequest,
+    background_tasks: BackgroundTasks
 ):
-    """
-    Start video processing task.
-    - `slow_motion`: if True, also produce a slow-motion copy of each segment
-    - `audio`: optional audio file to override video audio
-    - `user_id`: unique identifier for the user
-    """
-    video_id = get_video_id(url)
-    task_id = get_unique_task_id(url)  # Generate a unique task ID
-    db = next(get_db_session())
-    task_obj = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
+    try:
+        task_id = str(uuid.uuid4())
+        
+        db = SessionLocal()
+        try:
+            task = VideoTask(
+                task_id=task_id,
+                user_id=request.user_id,
+                url=request.url,
+                status=TaskStatus.QUEUED,  # Use constant
+                progress=0,
+                audio_file=request.audio_url,
+                slow_motion=request.slow_motion
+            )
+            db.add(task)
+            db.commit()
+            db.refresh(task)
+        finally:
+            db.close()
 
-    if task_obj and task_obj.status != "Completed":
-        return JSONResponse(
-            status_code=400,
-            content={"message": "A task for this video is already in progress"}
+        background_tasks.add_task(
+            process_video_task,
+            task_id=task_id,
+            url=request.url,
+            crop_ranges=request.crop_ranges,
+            audio_url=request.audio_url,
+            slow_motion=request.slow_motion
         )
 
-    audio_file_path = None
-    if audio:
-        audio_filename = f"{uuid.uuid4().hex}_{audio.filename}"
-        audio_file_path = os.path.join("audios", audio_filename)
-        with open(audio_file_path, "wb") as f:
-            f.write(await audio.read())
-
-    if not task_obj:
-        task_obj = VideoTask(
-            task_id=task_id,  # Use the unique task ID
-            user_id=user_id,  # Associate task with user_id
-            url=url,
-            status="Created",
-            progress=0,
-            audio_file=audio_file_path,
-            slow_motion=slow_motion
+        return {"task_id": task_id}
+    except Exception as e:
+        print(f"Error in process_video: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to process video: {str(e)}"
         )
-        db.add(task_obj)
-        db.commit()
-        db.refresh(task_obj)
-
-    background_tasks.add_task(
-        process_video_task,
-        task_id, url, crop_ranges, slow_motion, audio_file_path
-    )
-    return JSONResponse({"task_id": task_id, "message": "Task started"})
 
 @app.get("/task-status/{task_id}")
 async def get_task_status(task_id: str, user_id: str = Query(...)):
@@ -487,12 +585,13 @@ async def cancel_task(task_id: str, user_id: str = Query(...)):
     db = next(get_db_session())
     task_obj = db.query(VideoTask).filter(
         VideoTask.task_id == task_id,
-        VideoTask.user_id == user_id  # Ensure task belongs to user
+        VideoTask.user_id == user_id
     ).first()
-    if not task_obj or task_obj.status == "Completed":
+    if not task_obj or task_obj.status == TaskStatus.COMPLETED:
         return JSONResponse(status_code=404, content={"message": "Task not found or already completed"})
 
-    task_obj.status = "Cancelled"
+    task_obj.status = TaskStatus.CANCELLED
+    task_obj.completed_at = datetime.utcnow().isoformat()
     db.commit()
     return JSONResponse({"message": "Task cancelled"})
 
@@ -506,10 +605,10 @@ async def download_video_output(task_id: str, user_id: str = Query(...)):
     db = next(get_db_session())
     task = db.query(VideoTask).filter(
         VideoTask.task_id == task_id,
-        VideoTask.user_id == user_id  # Ensure task belongs to user
+        VideoTask.user_id == user_id
     ).first()
-    if not task or task.status != "Completed" or not task.output_file:
-        raise HTTPException(status_code=404, detail="File not found")
+    if not task or task.status != TaskStatus.COMPLETED or not task.output_file:
+        raise HTTPException(status_code=404, detail=task.output_file if task else "Task not found")
     if not os.path.exists(task.output_file):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(
@@ -524,18 +623,31 @@ async def get_all_tasks(user_id: str = Query(...)):
     Retrieve all tasks associated with a user.
     - `user_id`: Unique identifier for the user
     """
-    db = next(get_db_session())
-    tasks = db.query(VideoTask).filter(VideoTask.user_id == user_id).all()
-    return [
-        {
-            "task_id": task.task_id,
-            "status": task.status,
-            "progress": task.progress,
-            "output_file": task.output_file,
-            "created_at": task.created_at,
-        }
-        for task in tasks
-    ]
+    try:
+        db = SessionLocal()
+        tasks = db.query(VideoTask)\
+            .filter(VideoTask.user_id == user_id)\
+            .order_by(VideoTask.created_at.desc())\
+            .all()
+        return [
+            {
+                "task_id": task.task_id,
+                "status": task.status,
+                "progress": task.progress,
+                "output_file": task.output_file,
+                "created_at": task.created_at,
+                "completed_at": task.completed_at
+            }
+            for task in tasks
+        ]
+    except Exception as e:
+        print(f"Error getting tasks: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get tasks: {str(e)}"
+        )
+    finally:
+        db.close()
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -544,6 +656,45 @@ async def read_root():
             return f.read()
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Frontend template missing")
+
+@app.get('/api/audio-options')
+async def get_audio_options():
+    """Get available audio options."""
+    try:
+        audio_folder = 'assets/audios'
+        audio_files = []
+        
+        # Ensure the folder exists
+        if not os.path.exists(audio_folder):
+            os.makedirs(audio_folder)
+        
+        # Get all audio files
+        for file in os.listdir(audio_folder):
+            if file.lower().endswith(('.mp3', '.wav', '.m4a')):
+                file_path = os.path.join(audio_folder, file)
+                try:
+                    # Get file size
+                    size = os.path.getsize(file_path)
+                    # Format name
+                    name = os.path.splitext(file)[0].replace('_', ' ').title()
+                    
+                    audio_files.append({
+                        'file': f'/assets/audios/{file}',
+                        'name': name,
+                        'size': size,
+                        'duration': '1:30'  # You can add actual duration if needed
+                    })
+                except Exception as e:
+                    print(f"Error processing audio file {file}: {e}")
+                    continue
+        
+        return audio_files
+    except Exception as e:
+        print(f"Error getting audio options: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get audio options: {str(e)}"
+        )
 
 # ---------------------------------------------------------------------
 # 6. RUN THE APP

@@ -152,26 +152,21 @@
                         <!-- Segments Section -->
                         <div class="bg-[#1A1D24]/40 rounded-2xl border border-[#2A2D36] p-6">
                             <div class="flex items-center justify-between mb-3">
-            <div>
+                                <div>
                                     <label class="block text-base font-semibold text-gray-200">Video Segments</label>
-                                    <p class="text-xs text-gray-400 mt-1">Click "Capture Time" or manually set timestamps in (HH:MM:SS) format</p>
+                                    <p class="text-xs text-gray-400 mt-1">Click "Capture Time" to mark start and end times of your clips</p>
                                 </div>
-                                <button type="button" onclick="addSegment()"
-                                    class="text-xs px-3 py-1.5 bg-[#2A2D36] text-gray-200 rounded-lg hover:bg-[#3A3D46] 
-                                           border border-[#3A3D46] shadow-sm transition-all">
-                                    Add Segment
-                                </button>
                             </div>
                             <div class="relative">
                                 <div id="segmentsList" class="space-y-2 min-h-[168px] max-h-[calc(100vh-42rem)] overflow-y-auto pr-2
                                                              scrollbar-thin scrollbar-thumb-[#3A3D46] scrollbar-track-[#1A1D24] 
                                                              scrollbar-thumb-rounded-full scrollbar-track-rounded-full">
                                     <div id="segmentsPlaceholder" class="flex items-center justify-center h-[168px] text-gray-400 text-sm border-2 border-dashed border-[#2A2D36] rounded-xl">
-                                        Your video segments will appear here
+                                        Your clips will appear here when you use the Capture Time button
                                     </div>
                                 </div>
                             </div>
-            </div>
+                        </div>
             
                         <!-- Video and Audio Options Section -->
                         <div class="flex gap-6 w-[200%] -mr-8">
@@ -306,6 +301,15 @@
 
     <script src="https://www.youtube.com/iframe_api"></script>
     <script>
+        // Define Task Status Constants
+        const TaskStatus = {
+            DOWNLOADING_INPUT_VIDEO: 'DOWNLOADING_INPUT_VIDEO',
+            PROCESSING_SEGMENTS: 'PROCESSING_SEGMENTS',
+            PROCESSING_OUTPUT: 'PROCESSING_OUTPUT',
+            FAILED: 'FAILED',
+            COMPLETED: 'COMPLETED'
+        };
+
         // Add user ID management at the start of your script
         let userId;
 
@@ -1046,17 +1050,17 @@
                         <div class="flex items-center justify-between mb-2">
                             <span class="text-gray-300 text-sm truncate max-w-[200px]">${task.task_id}</span>
                             <span class="text-sm px-2 py-1 rounded-lg ${getStatusClass(task.status)}">
-                                ${task.status}
-                                </span>
-                            </div>
+                                ${getStatusDisplayText(task.status)}
+                            </span>
+                        </div>
                         <div class="w-full bg-[#1A1D24] rounded-full h-2 mb-3">
                             <div class="bg-blue-500 h-2 rounded-full transition-all duration-300" 
                                  style="width: ${task.progress}%"></div>
-                            </div>
+                        </div>
                         <div class="flex items-center justify-between">
                             <div class="text-xs text-gray-400">Progress: ${task.progress}%</div>
                             <div class="flex gap-2">
-                                ${task.status === 'Completed' ? `
+                                ${task.status === TaskStatus.COMPLETED ? `
                                     <a href="/download/${task.task_id}?user_id=${userId}" 
                                        class="px-3 py-1.5 bg-green-500/10 text-green-500 text-xs rounded-lg 
                                               hover:bg-green-500/20 transition-colors flex items-center gap-1">
@@ -1067,7 +1071,7 @@
                                         <span>Download</span>
                                     </a>
                                 ` : ''}
-                                ${['Processing', 'Queued'].includes(task.status) ? `
+                                ${[TaskStatus.DOWNLOADING_INPUT_VIDEO, TaskStatus.PROCESSING_SEGMENTS, TaskStatus.PROCESSING_OUTPUT].includes(task.status) ? `
                                     <button onclick="cancelTask('${task.task_id}')"
                                             class="px-3 py-1.5 bg-red-500/10 text-red-500 text-xs rounded-lg 
                                                    hover:bg-red-500/20 transition-colors flex items-center gap-1">
@@ -1078,7 +1082,7 @@
                                         <span>Cancel</span>
                                     </button>
                                 ` : ''}
-                        </div>
+                            </div>
                         </div>
                     </div>
                 `).join('');
@@ -1108,19 +1112,37 @@
 
         // Add helper function for status classes
         function getStatusClass(status) {
-            switch (status.toLowerCase()) {
-                case 'completed':
+            switch (status) {
+                case TaskStatus.COMPLETED:
                     return 'bg-green-500/10 text-green-500';
-                case 'failed':
+                case TaskStatus.FAILED:
                     return 'bg-red-500/10 text-red-500';
-                case 'processing':
+                case TaskStatus.DOWNLOADING_INPUT_VIDEO:
                     return 'bg-blue-500/10 text-blue-500';
-                case 'cancelled':
-                    return 'bg-gray-500/10 text-gray-500';
-                case 'queued':
-                    return 'bg-yellow-500/10 text-yellow-500';
+                case TaskStatus.PROCESSING_SEGMENTS:
+                    return 'bg-indigo-500/10 text-indigo-500';
+                case TaskStatus.PROCESSING_OUTPUT:
+                    return 'bg-purple-500/10 text-purple-500';
                 default:
                     return 'bg-gray-500/10 text-gray-500';
+            }
+        }
+
+        // Update status display text
+        function getStatusDisplayText(status) {
+            switch (status) {
+                case TaskStatus.DOWNLOADING_INPUT_VIDEO:
+                    return 'Downloading Video';
+                case TaskStatus.PROCESSING_SEGMENTS:
+                    return 'Processing Clips';
+                case TaskStatus.PROCESSING_OUTPUT:
+                    return 'Creating Output';
+                case TaskStatus.FAILED:
+                    return 'Failed';
+                case TaskStatus.COMPLETED:
+                    return 'Completed';
+                default:
+                    return status;
             }
         }
 

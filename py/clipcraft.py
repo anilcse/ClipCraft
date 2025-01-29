@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 import fcntl
 from pydantic import BaseModel
 import requests
+from enum import Enum
 
 # --- Database imports ---
 from sqlalchemy import Column, Integer, String, Boolean, create_engine, event
@@ -372,7 +373,7 @@ def process_video_task(
 
         try:
             # Update initial status
-            task.status = "Processing"
+            task.status = TaskStatus.DOWNLOADING_INPUT_VIDEO.value
             task.progress = 10
             db.commit()
 
@@ -383,7 +384,7 @@ def process_video_task(
             if not os.path.exists(input_path):
                 download_video(url, input_path)
 
-            task.status = "Video downloaded"
+            task.status = TaskStatus.PROCESSING_SEGMENTS.value
             task.progress = 20
             db.commit()
 
@@ -415,11 +416,11 @@ def process_video_task(
                 db.commit()
 
             # Merge segments
+            task.status = TaskStatus.PROCESSING_OUTPUT.value
+            db.commit()
+
             merged_output = os.path.join("segments", video_id, f"{video_id}_merged_output.mp4")
             merge_videos_with_original_fps(segment_paths, input_path, merged_output)
-
-            task.status = "Merging segments"
-            db.commit()
 
             # Handle audio if provided
             if audio_url:
@@ -433,7 +434,7 @@ def process_video_task(
                 final_output = merged_output
 
             # Update final status with completion time
-            task.status = "Completed"
+            task.status = TaskStatus.COMPLETED.value
             task.progress = 100
             task.output_file = final_output
             task.completed_at = datetime.utcnow().isoformat()
@@ -441,7 +442,7 @@ def process_video_task(
 
         except Exception as e:
             print(f"Error processing task {task_id}: {str(e)}")
-            task.status = "Failed"
+            task.status = TaskStatus.FAILED.value
             task.progress = 0
             task.completed_at = datetime.utcnow().isoformat()
             db.commit()
@@ -453,7 +454,7 @@ def process_video_task(
             try:
                 task = db.query(VideoTask).filter(VideoTask.task_id == task_id).first()
                 if task:
-                    task.status = "Failed"
+                    task.status = TaskStatus.FAILED.value
                     task.progress = 0
                     task.completed_at = datetime.utcnow().isoformat()
                     db.commit()
@@ -503,13 +504,13 @@ class VideoProcessRequest(BaseModel):
     slow_motion: bool = False
     user_id: str  # Add this field
 
-# Add status constants at the top of the file
-class TaskStatus:
-    QUEUED = "Queued"
-    PROCESSING = "Processing"
-    COMPLETED = "Completed"
-    FAILED = "Failed"
-    CANCELLED = "Cancelled"
+# Add TaskStatus enum at the top of the file
+class TaskStatus(str, Enum):
+    DOWNLOADING_INPUT_VIDEO = 'DOWNLOADING_INPUT_VIDEO'
+    PROCESSING_SEGMENTS = 'PROCESSING_SEGMENTS'
+    PROCESSING_OUTPUT = 'PROCESSING_OUTPUT'
+    FAILED = 'FAILED'
+    COMPLETED = 'COMPLETED'
 
 @app.post("/process-video")
 async def process_video(
@@ -525,7 +526,7 @@ async def process_video(
                 task_id=task_id,
                 user_id=request.user_id,
                 url=request.url,
-                status=TaskStatus.QUEUED,  # Use constant
+                status=TaskStatus.DOWNLOADING_INPUT_VIDEO.value,  # Use constant
                 progress=0,
                 audio_file=request.audio_url,
                 slow_motion=request.slow_motion
@@ -587,10 +588,10 @@ async def cancel_task(task_id: str, user_id: str = Query(...)):
         VideoTask.task_id == task_id,
         VideoTask.user_id == user_id
     ).first()
-    if not task_obj or task_obj.status == TaskStatus.COMPLETED:
+    if not task_obj or task_obj.status == TaskStatus.COMPLETED.value:
         return JSONResponse(status_code=404, content={"message": "Task not found or already completed"})
 
-    task_obj.status = TaskStatus.CANCELLED
+    task_obj.status = TaskStatus.FAILED.value
     task_obj.completed_at = datetime.utcnow().isoformat()
     db.commit()
     return JSONResponse({"message": "Task cancelled"})
@@ -607,7 +608,7 @@ async def download_video_output(task_id: str, user_id: str = Query(...)):
         VideoTask.task_id == task_id,
         VideoTask.user_id == user_id
     ).first()
-    if not task or task.status != TaskStatus.COMPLETED or not task.output_file:
+    if not task or task.status != TaskStatus.COMPLETED.value or not task.output_file:
         raise HTTPException(status_code=404, detail=task.output_file if task else "Task not found")
     if not os.path.exists(task.output_file):
         raise HTTPException(status_code=404, detail="File not found")

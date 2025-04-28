@@ -380,8 +380,10 @@ def process_video_task(
             # Process video
             video_id = get_video_id(url)
             input_path = os.path.join("inputs", f"{video_id}.mp4")
+            print(f"Debug: Input video path: {input_path}")
 
             if not os.path.exists(input_path):
+                print(f"Debug: Downloading video from URL: {url}")
                 download_video(url, input_path)
 
             task.status = TaskStatus.PROCESSING_SEGMENTS.value
@@ -390,46 +392,58 @@ def process_video_task(
 
             # Process segments
             segments = crop_ranges.split()
+            print(f"Debug: Crop ranges received: {segments}")
             segment_paths = []
             segments_dir = os.path.join("segments", video_id)
             os.makedirs(segments_dir, exist_ok=True)
 
             for i, crange in enumerate(segments):
-                start_time, end_time = crange.split("-")
+                print(f"Debug: Processing segment {i+1}: '{crange}'")
+                parts = crange.split("-")
+                if len(parts) != 2:
+                    print(f"Error: Invalid crop range format for segment {i+1}: '{crange}'")
+                    raise HTTPException(status_code=400, detail=f"Invalid crop range format: {crange}")
+                start_time, end_time = parts
+                print(f"Debug: Segment {i+1} - start_time: {start_time}, end_time: {end_time}")
+
                 normal_seg = os.path.join(
                     segments_dir, f"{start_time}_{end_time}_normal.mp4"
                 )
-
+                print(f"Debug: Cropping video segment to file: {normal_seg}")
                 crop_video(input_path, normal_seg, start_time, end_time)
-
+                print(f"Debug: Finished cropping segment {i+1} normal segment")
                 segment_paths.append(normal_seg)
 
                 if slow_motion:
                     slow_seg = os.path.join(
                         segments_dir, f"{start_time}_{end_time}_slow.mp4"
                     )
+                    print(f"Debug: Applying slow motion on segment {i+1}: {normal_seg} -> {slow_seg}")
                     apply_slow_motion(normal_seg, slow_seg)
                     segment_paths.append(slow_seg)
 
                 # Update progress (roughly from 20% -> 70%)
                 task.progress = int(20 + (i + 1) / len(segments) * 50)
                 db.commit()
+                print(f"Debug: Updated progress to {task.progress}% after segment {i+1}")
 
             # Merge segments
             task.status = TaskStatus.PROCESSING_OUTPUT.value
             db.commit()
-
+            print("Debug: Merging segments...")
             merged_output = os.path.join("segments", video_id, f"{video_id}_merged_output.mp4")
             merge_videos_with_original_fps(segment_paths, input_path, merged_output)
+            print("Debug: Merging completed.")
 
             # Handle audio if provided
             if audio_url:
-                # Download and process audio
+                print("Debug: Processing audio replacement...")
                 audio_path = download_audio_from_url(audio_url)
                 final_output = os.path.join("segments", video_id, f"{video_id}_final_output.mp4")
                 replace_audio(merged_output, audio_path, final_output)
                 os.remove(merged_output)  # Remove the merged output without new audio
                 task.audio_file = audio_path  # Store audio file path
+                print(f"Debug: Audio replaced, final output saved as {final_output}")
             else:
                 final_output = merged_output
 
@@ -439,6 +453,7 @@ def process_video_task(
             task.output_file = final_output
             task.completed_at = datetime.utcnow().isoformat()
             db.commit()
+            print(f"Debug: Task {task_id} completed successfully. Output: {final_output}")
 
         except Exception as e:
             print(f"Error processing task {task_id}: {str(e)}")
@@ -458,7 +473,8 @@ def process_video_task(
                     task.progress = 0
                     task.completed_at = datetime.utcnow().isoformat()
                     db.commit()
-            except:
+            except Exception as inner_e:
+                print(f"Error updating task status after failure: {inner_e}")
                 db.rollback()
         raise
     finally:
@@ -519,7 +535,7 @@ async def process_video(
 ):
     try:
         task_id = str(uuid.uuid4())
-        
+
         db = SessionLocal()
         try:
             task = VideoTask(
